@@ -1,14 +1,10 @@
-from PIL import Image
 import tensorflow as tf
-import math
-import numpy as np
 import time
-import os
-
+from utils import *
 import oprations as ops
 
 # 超参数设定
-EPOCHS = 1
+EPOCHS = 20
 BATCH_SIZE = 128
 LEARNING_RATE = 0.0002
 BETA_1 = 0.5  # Momentum term of adam [0.5]
@@ -21,24 +17,13 @@ D_F_DIM = 64
 G_F_DIM = 64
 
 
-def save_images(images, sample_dir, epoch, idx):
-    if not os.path.exists(sample_dir):
-        os.makedirs(sample_dir)
-    # 用生成的图片数据生成 PNG 图片
-    images = np.squeeze(images)
-    for i in range(BATCH_SIZE):
-        image = images[i] * 127.5 + 127.5
-        Image.fromarray(image.astype(np.uint8)).save("{}/image-epoch{}-idx{}-{}.png".format(sample_dir, epoch, idx, i))
-
-
-def conv_out_size_same(size, stride):
-    return int(math.ceil(float(size) / float(stride)))
-
-
 class DCGAN():
-    def __init__(self, sess, height=64, width=64, channel=3, checkpoint_dir=None, sample_dir=None):
+    def __init__(self, sess, height=64, width=64, channel=3, checkpoint_dir=None, sample_dir=None, sample_size=64):
         # tensorflow session
         self.sess = sess
+
+        # 生成图片数量，默认为64张
+        self.sample_size = sample_size
 
         # 获取图片的各个维度
         # channel 1代表灰度图 3代表RGB
@@ -94,7 +79,7 @@ class DCGAN():
 
     def generator(self, z):
 
-        with tf.variable_scope("generator") as scope:
+        with tf.variable_scope("generator"):
             s_h, s_w = self.image_dims['height'], self.image_dims['width']
             s_h2, s_w2 = conv_out_size_same(s_h, 2), conv_out_size_same(s_w, 2)
             s_h4, s_w4 = conv_out_size_same(s_h2, 2), conv_out_size_same(s_w2, 2)
@@ -107,7 +92,6 @@ class DCGAN():
             g_bn0 = ops.batch_norm(g_h0_re, name='g_bn0')
             h0 = tf.nn.relu(g_bn0)
 
-            # 此处用batch_size？
             g_h1 = ops.deconv2d(h0, [BATCH_SIZE, s_h8, s_w8, G_F_DIM * 4], name='g_h1')
             g_bn1 = ops.batch_norm(g_h1, name='g_bn1')
             h1 = tf.nn.relu(g_bn1)
@@ -141,20 +125,19 @@ class DCGAN():
             g_bn0 = ops.batch_norm(g_h0_re, name='g_bn0', train=False)
             h0 = tf.nn.relu(g_bn0)
 
-            # 此处用batch_size？
-            g_h1 = ops.deconv2d(h0, [BATCH_SIZE, s_h8, s_w8, G_F_DIM * 4], name='g_h1')
+            g_h1 = ops.deconv2d(h0, [self.sample_size, s_h8, s_w8, G_F_DIM * 4], name='g_h1')
             g_bn1 = ops.batch_norm(g_h1, name='g_bn1', train=False)
             h1 = tf.nn.relu(g_bn1)
 
-            g_h2 = ops.deconv2d(h1, [BATCH_SIZE, s_h4, s_w4, G_F_DIM * 2], name='g_h2')
+            g_h2 = ops.deconv2d(h1, [self.sample_size, s_h4, s_w4, G_F_DIM * 2], name='g_h2')
             g_bn2 = ops.batch_norm(g_h2, name='g_bn2', train=False)
             h2 = tf.nn.relu(g_bn2)
 
-            g_h3 = ops.deconv2d(h2, [BATCH_SIZE, s_h2, s_w2, G_F_DIM * 1], name='g_h3')
+            g_h3 = ops.deconv2d(h2, [self.sample_size, s_h2, s_w2, G_F_DIM * 1], name='g_h3')
             g_bn3 = ops.batch_norm(g_h3, name='g_bn3', train=False)
             h3 = tf.nn.relu(g_bn3)
 
-            h4 = ops.deconv2d(h3, [BATCH_SIZE, s_h, s_w, self.image_dims['channel']], name='g_h4')
+            h4 = ops.deconv2d(h3, [self.sample_size, s_h, s_w, self.image_dims['channel']], name='g_h4')
 
             # 激活函数使用tanh
             return tf.nn.tanh(h4)
@@ -196,13 +179,10 @@ class DCGAN():
         tf.global_variables_initializer().run()
 
         # 随机向量,用于一定时间的训练后，生成样本图片
-        sample_z = np.random.uniform(-1, 1, size=(BATCH_SIZE, Z_DIM))
+        sample_z = np.random.uniform(-1, 1, size=(self.sample_size, Z_DIM))
 
-        # 作用暂时未知
-        sample_inputs = data[0:BATCH_SIZE]
-
-        # 计数器，
-        counter = 1
+        # 计数器，记录一共训练了多少次batch
+        counter = 0
         start_time = time.time()
         # 读取检查点，即继续上次训练的参数继续训练
         could_load, checkpoint_counter = self.load(self.checkpoint_dir)
@@ -230,30 +210,27 @@ class DCGAN():
                 # 训练两次G
                 self.sess.run([g_optim], feed_dict={self.z: batch_z})
 
-                errD_fake = self.d_loss_fake.eval({self.z: batch_z})
-                errD_real = self.d_loss_real.eval({self.inputs: batch_images})
-                errG = self.g_loss.eval({self.z: batch_z})
+                err_d_fake = self.d_loss_fake.eval({self.z: batch_z})
+                err_d_real = self.d_loss_real.eval({self.inputs: batch_images})
+                err_g = self.g_loss.eval({self.z: batch_z})
 
                 counter += 1
                 print("Epoch: [%2d/%2d] [%4d/%4d] time: %4.4f, d_loss: %.8f, g_loss: %.8f" \
                       % (epoch, EPOCHS, idx, batch_idxs,
-                         time.time() - start_time, errD_fake + errD_real, errG))
+                         time.time() - start_time, err_d_fake + err_d_real, err_g))
 
-                if np.mod(counter, 77) == 1:
+                if np.mod(counter, 100) == 0:
                     # 生成样本，并未修改参数值
-                    samples, d_loss, g_loss = self.sess.run(
-                        [self.sampler, self.d_loss, self.g_loss],
+                    samples = self.sess.run(
+                        [self.sampler],
                         feed_dict={
                             self.z: sample_z,
-                            self.inputs: sample_inputs,
                         },
                     )
-                    save_images(samples, self.sample_dir, epoch, idx)
-                    print("[Sample] d_loss: %.8f, g_loss: %.8f" % (d_loss, g_loss))
-                # except:
-                #     print("one pic error!...")
+                    save_images(samples, self.sample_dir, epoch, idx, self.sample_size)
+                    print("Sampling......")
 
-                if np.mod(counter, 76) == 2:
+                if np.mod(counter, 300) == 1:
                     self.save(self.checkpoint_dir, counter)
 
     # 用于保存模型到本地
@@ -267,6 +244,7 @@ class DCGAN():
                         os.path.join(checkpoint_dir, model_name),
                         global_step=step)
 
+    # 从本地读取
     def load(self, checkpoint_dir):
         import re
         print(" [*] Reading checkpoints...")
