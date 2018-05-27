@@ -6,7 +6,7 @@ import tensorflow as tf
 # bath_norm的封装
 def batch_norm(x, train=True, epsilon=1e-5, momentum=0.9, name="batch_norm"):
     with tf.variable_scope(name):
-        return tf.contrib.layers.batch_norm(x, decay=momentum, updates_collections=None, epsilon=epsilon,
+        return tf.contrib.layers.batch_norm(x, decay=momentum, updates_collections=None, epsilon=epsilon, center=True,
                                             scale=True, is_training=train, scope=name)
 
 
@@ -18,7 +18,8 @@ def conv2d(input_, output_dim, k_h=5, k_w=5, d_h=2, d_w=2, stddev=0.02, name="co
         conv = tf.nn.conv2d(input_, w, strides=[1, d_h, d_w, 1], padding='SAME')
 
         biases = tf.get_variable('biases', [output_dim], initializer=tf.constant_initializer(0.0))
-        conv = tf.reshape(tf.nn.bias_add(conv, biases), conv.get_shape())
+        # conv = tf.reshape(tf.nn.bias_add(conv, biases), conv.get_shape())
+        conv = tf.nn.bias_add(conv, biases)
 
         return conv
 
@@ -55,7 +56,8 @@ def deconv2d(input_, output_shape,
                                         strides=[1, d_h, d_w, 1])
 
         biases = tf.get_variable('biases', [output_shape[-1]], initializer=tf.constant_initializer(0.0))
-        deconv = tf.reshape(tf.nn.bias_add(deconv, biases), deconv.get_shape())
+        # deconv = tf.reshape(tf.nn.bias_add(deconv, biases), deconv.get_shape())
+        deconv = tf.nn.bias_add(deconv, biases)
 
     if with_w:
         return deconv, w, biases

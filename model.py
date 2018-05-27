@@ -4,8 +4,8 @@ from utils import *
 import oprations as ops
 
 # 超参数设定
-EPOCHS = 20
-BATCH_SIZE = 128
+EPOCHS = 10
+BATCH_SIZE = 64
 LEARNING_RATE = 0.0002
 BETA_1 = 0.5  # Momentum term of adam [0.5]
 
@@ -21,6 +21,7 @@ class DCGAN():
     def __init__(self, sess, height=64, width=64, channel=3, checkpoint_dir=None, sample_dir=None, sample_size=64):
         # tensorflow session
         self.sess = sess
+        self.is_train = tf.placeholder(tf.bool, name='is_train')
 
         # 生成图片数量，默认为64张
         self.sample_size = sample_size
@@ -50,9 +51,18 @@ class DCGAN():
         # D 代表判别器输入真实图片产生的输出
         self.D, self.D_logits = self.discriminator(self.inputs, reuse=False)
         # 用于产生图片，与generator共享参数
-        self.sampler = self.sampler(self.z)
+        self.sample_img = self.sampler(self.z)
         # D_ 代表判别器输入生成图片产生的输出
         self.D_, self.D_logits_ = self.discriminator(self.G, reuse=True)
+
+        # 用于查看图片的判别其的输出
+        self.temp_img = tf.placeholder(
+            tf.float32, [None,
+                         self.image_dims['height'],
+                         self.image_dims['width'],
+                         self.image_dims['channel']
+                         ], name='temp_img')
+        self.temp_D = self.discriminator_for_sample(self.temp_img)
 
         # 判别其对真实图片的损失函数
         self.d_loss_real = tf.reduce_mean(
@@ -89,19 +99,19 @@ class DCGAN():
             # 将随机向量z作为输入，通过全连接生成[s_h16, s_w16, G_F_DIM * 8]大小的输出
             g_h0_lin = ops.linear(z, G_F_DIM * 8 * s_h16 * s_w16, 'g_h0_lin')
             g_h0_re = tf.reshape(g_h0_lin, [-1, s_h16, s_w16, G_F_DIM * 8])
-            g_bn0 = ops.batch_norm(g_h0_re, name='g_bn0')
+            g_bn0 = ops.batch_norm(g_h0_re, name='g_bn0', train=self.is_train)
             h0 = tf.nn.relu(g_bn0)
 
             g_h1 = ops.deconv2d(h0, [BATCH_SIZE, s_h8, s_w8, G_F_DIM * 4], name='g_h1')
-            g_bn1 = ops.batch_norm(g_h1, name='g_bn1')
+            g_bn1 = ops.batch_norm(g_h1, name='g_bn1', train=self.is_train)
             h1 = tf.nn.relu(g_bn1)
 
             g_h2 = ops.deconv2d(h1, [BATCH_SIZE, s_h4, s_w4, G_F_DIM * 2], name='g_h2')
-            g_bn2 = ops.batch_norm(g_h2, name='g_bn2')
+            g_bn2 = ops.batch_norm(g_h2, name='g_bn2', train=self.is_train)
             h2 = tf.nn.relu(g_bn2)
 
             g_h3 = ops.deconv2d(h2, [BATCH_SIZE, s_h2, s_w2, G_F_DIM * 1], name='g_h3')
-            g_bn3 = ops.batch_norm(g_h3, name='g_bn3')
+            g_bn3 = ops.batch_norm(g_h3, name='g_bn3', train=self.is_train)
             h3 = tf.nn.relu(g_bn3)
 
             h4 = ops.deconv2d(h3, [BATCH_SIZE, s_h, s_w, self.image_dims['channel']], name='g_h4')
@@ -153,15 +163,15 @@ class DCGAN():
             h0 = ops.lrelu(d_h0_conv)
 
             d_h1_conv = ops.conv2d(h0, D_F_DIM * 2, name='d_h1_conv')
-            d_bn1 = ops.batch_norm(d_h1_conv, name='d_bn1')
+            d_bn1 = ops.batch_norm(d_h1_conv, name='d_bn1', train=self.is_train)
             h1 = ops.lrelu(d_bn1)
 
             d_h2_conv = ops.conv2d(h1, D_F_DIM * 4, name='d_h2_conv')
-            d_bn2 = ops.batch_norm(d_h2_conv, name='d_bn2')
+            d_bn2 = ops.batch_norm(d_h2_conv, name='d_bn2', train=self.is_train)
             h2 = ops.lrelu(d_bn2)
 
             d_h3_conv = ops.conv2d(h2, D_F_DIM * 8, name='d_h3_conv')
-            d_bn3 = ops.batch_norm(d_h3_conv, name='d_bn3')
+            d_bn3 = ops.batch_norm(d_h3_conv, name='d_bn3', train=self.is_train)
             h3 = ops.lrelu(d_bn3)
 
             # 最后一层使用全连接
@@ -169,7 +179,33 @@ class DCGAN():
 
             return tf.nn.sigmoid(h4), h4
 
-    def train(self, data):
+    def discriminator_for_sample(self, image):
+        with tf.variable_scope("discriminator") as scope:
+            scope.reuse_variables()
+
+            # 用5*5，stride为2的filter对输入进行卷积操作
+            d_h0_conv = ops.conv2d(image, D_F_DIM, name='d_h0_conv')
+            # 激活函数为leaky relu
+            h0 = ops.lrelu(d_h0_conv)
+
+            d_h1_conv = ops.conv2d(h0, D_F_DIM * 2, name='d_h1_conv')
+            d_bn1 = ops.batch_norm(d_h1_conv, name='d_bn1', train=False)
+            h1 = ops.lrelu(d_bn1)
+
+            d_h2_conv = ops.conv2d(h1, D_F_DIM * 4, name='d_h2_conv')
+            d_bn2 = ops.batch_norm(d_h2_conv, name='d_bn2', train=False)
+            h2 = ops.lrelu(d_bn2)
+
+            d_h3_conv = ops.conv2d(h2, D_F_DIM * 8, name='d_h3_conv')
+            d_bn3 = ops.batch_norm(d_h3_conv, name='d_bn3', train=False)
+            h3 = ops.lrelu(d_bn3)
+
+            # 最后一层使用全连接
+            h4 = ops.linear(tf.reshape(h3, [self.sample_size, -1]), 1, 'd_h4_lin')
+
+            return tf.nn.sigmoid(h4)
+
+    def train(self, data, is_file=False):
         # adam梯度下降
         d_optim = tf.train.AdamOptimizer(LEARNING_RATE, beta1=BETA_1) \
             .minimize(self.d_loss, var_list=self.d_vars)
@@ -194,43 +230,60 @@ class DCGAN():
             print(" [!] Load failed...")
 
         for epoch in range(EPOCHS):
+            # 打乱data
+            np.random.shuffle(data)
             # batch的数量
             batch_idxs = len(data) // BATCH_SIZE
 
             for idx in range(batch_idxs):
                 # 取出一个batch的图片
-                batch_images = data[idx * BATCH_SIZE:(idx + 1) * BATCH_SIZE]
+                if is_file:
+                    batch_images_files = data[idx * BATCH_SIZE:(idx + 1) * BATCH_SIZE]
+                    batch_images = [get_image_from_file(path) for path in batch_images_files]
+                else:
+                    batch_images = data[idx * BATCH_SIZE:(idx + 1) * BATCH_SIZE]
+
                 # 随机向量
                 batch_z = np.random.uniform(-1, 1, [BATCH_SIZE, Z_DIM]).astype(np.float32)
-
                 # 训练D
-                self.sess.run([d_optim], feed_dict={self.inputs: batch_images, self.z: batch_z})
-                # 训练G
-                self.sess.run([g_optim], feed_dict={self.z: batch_z})
-                # 训练两次G
-                self.sess.run([g_optim], feed_dict={self.z: batch_z})
+                self.sess.run([d_optim], feed_dict={
+                    self.inputs: batch_images,
+                    self.z: batch_z,
+                    self.is_train: True
+                })
 
-                err_d_fake = self.d_loss_fake.eval({self.z: batch_z})
-                err_d_real = self.d_loss_real.eval({self.inputs: batch_images})
-                err_g = self.g_loss.eval({self.z: batch_z})
+                # 训练G
+                batch_z = np.random.uniform(-1, 1, [BATCH_SIZE, Z_DIM]).astype(np.float32)
+                self.sess.run([g_optim], feed_dict={self.z: batch_z, self.is_train: True})
+                # 训练两次G
+                batch_z = np.random.uniform(-1, 1, [BATCH_SIZE, Z_DIM]).astype(np.float32)
+                self.sess.run([g_optim], feed_dict={self.z: batch_z, self.is_train: True})
+                # # 训练三次G
+                # batch_z = np.random.uniform(-1, 1, [BATCH_SIZE, Z_DIM]).astype(np.float32)
+                # self.sess.run([g_optim], feed_dict={self.z: batch_z})
+
+                err_d_fake = self.d_loss_fake.eval({self.z: batch_z, self.is_train: False})
+                err_d_real = self.d_loss_real.eval({self.inputs: batch_images, self.is_train: False})
+                err_g = self.g_loss.eval({self.z: batch_z, self.is_train: False})
 
                 counter += 1
                 print("Epoch: [%2d/%2d] [%4d/%4d] time: %4.4f, d_loss: %.8f, g_loss: %.8f" \
-                      % (epoch, EPOCHS, idx, batch_idxs,
+                      % (epoch + 1, EPOCHS, idx, batch_idxs,
                          time.time() - start_time, err_d_fake + err_d_real, err_g))
 
-                if np.mod(counter, 100) == 0:
+                if np.mod(counter, 300) == 1:
                     # 生成样本，并未修改参数值
                     samples = self.sess.run(
-                        [self.sampler],
+                        [self.sample_img],
                         feed_dict={
                             self.z: sample_z,
+                            self.is_train: False
                         },
                     )
-                    save_images(samples, self.sample_dir, epoch, idx, self.sample_size)
+                    save_images(samples, self.sample_dir, epoch + 1, idx, self.sample_size)
                     print("Sampling......")
 
-                if np.mod(counter, 300) == 1:
+                if np.mod(counter, 1800) == 1:
                     self.save(self.checkpoint_dir, counter)
 
     # 用于保存模型到本地
@@ -259,3 +312,32 @@ class DCGAN():
         else:
             print(" [*] Failed to find a checkpoint")
             return False, 0
+
+    def sample(self, dir):
+        # 读取检查点，即继续上次训练的参数继续训练
+        could_load, checkpoint_counter = self.load(self.checkpoint_dir)
+        if could_load:
+            counter = checkpoint_counter
+            print(" [*] Load SUCCESS")
+            print("counter:{}".format(counter))
+        else:
+            print(" [!] Load failed...")
+
+        inputs_z = np.random.uniform(-1, 1, size=(self.sample_size, Z_DIM)).astype(np.float32)
+        sampled_img = self.sess.run(
+            [self.sample_img],
+            feed_dict={
+                self.z: inputs_z,
+                self.is_train: False
+            },
+        )
+        sampled_img = np.squeeze(sampled_img)
+        save_images(sampled_img, dir, sample_size=self.sample_size)
+        return sampled_img
+        # loss = self.sess.run(
+        #     [self.temp_D], feed_dict={
+        #         self.temp_img: sampled_img,
+        #         self.is_train: False}
+        # )
+        #
+        # print(loss)
