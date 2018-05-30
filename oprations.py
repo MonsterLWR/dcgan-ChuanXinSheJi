@@ -6,8 +6,9 @@ import tensorflow as tf
 # bath_norm的封装
 def batch_norm(x, train=True, epsilon=1e-5, momentum=0.9, name="batch_norm"):
     with tf.variable_scope(name):
-        return tf.contrib.layers.batch_norm(x, decay=momentum, updates_collections=None, epsilon=epsilon, center=True,
-                                            scale=True, is_training=train, scope=name)
+        # return tf.contrib.layers.batch_norm(x, decay=momentum, updates_collections=None, epsilon=epsilon, center=True,
+        #                                     scale=True, is_training=train, scope=name)
+        return tf.layers.batch_normalization(x, training=train, name=name)
 
 
 # 用5*5，stride为2的filter对输入进行卷积操作

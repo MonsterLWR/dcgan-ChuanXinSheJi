@@ -16,13 +16,10 @@ D_F_DIM = 64
 # Dimension of gen filters in first conv layer.
 G_F_DIM = 64
 
-# WGAN
-CLIP = [-0.01, 0.01]
-CRITIC_NUM = 5
-
 
 class DCGAN():
-    def __init__(self, sess, height=64, width=64, channel=3, checkpoint_dir=None, sample_dir=None, sample_size=64):
+    def __init__(self, sess, height=64, width=64, channel=3,
+                 checkpoint_dir=None, sample_dir=None, sample_size=64, lam=0.1):
         # tensorflow session
         self.sess = sess
         self.is_train = tf.placeholder(tf.bool, name='is_train')
@@ -53,11 +50,11 @@ class DCGAN():
         # G代表生成的图片,取值为[-1,1]
         self.G = self.generator(self.z)
         # D 代表判别器输入真实图片产生的输出
-        _, self.D_logits = self.discriminator(self.inputs, reuse=False)
-        # D_ 代表判别器输入生成图片产生的输出
-        _, self.D_logits_ = self.discriminator(self.G, reuse=True)
-        # 用于产生采样图片，与generator共享参数
+        self.D, self.D_logits = self.discriminator(self.inputs, reuse=False)
+        # 用于产生图片，与generator共享参数
         self.sample_img = self.sampler(self.z)
+        # D_ 代表判别器输入生成图片产生的输出
+        self.D_, self.D_logits_ = self.discriminator(self.G, reuse=True)
 
         # # 用于查看图片的判别其的输出
         # self.temp_img = tf.placeholder(
@@ -69,14 +66,14 @@ class DCGAN():
         # self.temp_D = self.discriminator_for_sample(self.temp_img)
 
         # 判别其对真实图片的损失函数
-        self.d_loss_real = tf.reduce_mean(tf.scalar_mul(-1, self.D_logits))
-        # tf.nn.sigmoid_cross_entropy_with_logits(logits=self.D_logits, labels=tf.ones_like(self.D)))
+        self.d_loss_real = tf.reduce_mean(
+            tf.nn.sigmoid_cross_entropy_with_logits(logits=self.D_logits, labels=tf.ones_like(self.D)))
         # 判别其对生成图片的损失函数
-        self.d_loss_fake = tf.reduce_mean(self.D_logits_)
-        # tf.nn.sigmoid_cross_entropy_with_logits(logits=self.D_logits_, labels=tf.zeros_like(self.D_)))
+        self.d_loss_fake = tf.reduce_mean(
+            tf.nn.sigmoid_cross_entropy_with_logits(logits=self.D_logits_, labels=tf.zeros_like(self.D_)))
         # 生成器的损失函数
-        self.g_loss = tf.reduce_mean(tf.scalar_mul(-1, self.D_logits_))
-        # tf.nn.sigmoid_cross_entropy_with_logits(logits=self.D_logits_, labels=tf.ones_like(self.D_)))
+        self.g_loss = tf.reduce_mean(
+            tf.nn.sigmoid_cross_entropy_with_logits(logits=self.D_logits_, labels=tf.ones_like(self.D_)))
 
         # 判别器的损失函数
         self.d_loss = self.d_loss_real + self.d_loss_fake
@@ -91,6 +88,19 @@ class DCGAN():
         # 用于保存参数到硬盘的对象
         self.saver = tf.train.Saver()
 
+        # Completion.
+        self.lam = lam
+        self.mask = tf.placeholder(tf.float32, [height, width, channel], name='mask')
+        # tf.contrib.layers.flatten()第二个参数作用不明
+        # [None,1]
+        self.contextual_loss = tf.reduce_sum(
+            tf.contrib.layers.flatten(
+                tf.abs(tf.multiply(self.mask, self.G) - tf.multiply(self.mask, self.inputs))), axis=1)
+        self.perceptual_loss = self.g_loss
+        self.complete_loss = self.contextual_loss + self.lam * self.perceptual_loss
+        # 取导数
+        self.grad_complete_loss = tf.gradients(self.complete_loss, self.z)
+
     def generator(self, z):
 
         with tf.variable_scope("generator"):
@@ -103,19 +113,19 @@ class DCGAN():
             # 将随机向量z作为输入，通过全连接生成[s_h16, s_w16, G_F_DIM * 8]大小的输出
             g_h0_lin = ops.linear(z, G_F_DIM * 8 * s_h16 * s_w16, 'g_h0_lin')
             g_h0_re = tf.reshape(g_h0_lin, [-1, s_h16, s_w16, G_F_DIM * 8])
-            g_bn0 = ops.batch_norm(g_h0_re, name='g_bn0', train=self.is_train)
+            g_bn0 = tf.layers.batch_normalization(g_h0_re, name='g_bn0', training=self.is_train)
             h0 = tf.nn.relu(g_bn0)
 
             g_h1 = ops.deconv2d(h0, [BATCH_SIZE, s_h8, s_w8, G_F_DIM * 4], name='g_h1')
-            g_bn1 = ops.batch_norm(g_h1, name='g_bn1', train=self.is_train)
+            g_bn1 = tf.layers.batch_normalization(g_h1, name='g_bn1', training=self.is_train)
             h1 = tf.nn.relu(g_bn1)
 
             g_h2 = ops.deconv2d(h1, [BATCH_SIZE, s_h4, s_w4, G_F_DIM * 2], name='g_h2')
-            g_bn2 = ops.batch_norm(g_h2, name='g_bn2', train=self.is_train)
+            g_bn2 = tf.layers.batch_normalization(g_h2, name='g_bn2', training=self.is_train)
             h2 = tf.nn.relu(g_bn2)
 
             g_h3 = ops.deconv2d(h2, [BATCH_SIZE, s_h2, s_w2, G_F_DIM * 1], name='g_h3')
-            g_bn3 = ops.batch_norm(g_h3, name='g_bn3', train=self.is_train)
+            g_bn3 = tf.layers.batch_normalization(g_h3, name='g_bn3', training=self.is_train)
             h3 = tf.nn.relu(g_bn3)
 
             h4 = ops.deconv2d(h3, [BATCH_SIZE, s_h, s_w, self.image_dims['channel']], name='g_h4')
@@ -136,19 +146,19 @@ class DCGAN():
             # 将随机向量z作为输入，通过全连接生成[s_h16, s_w16, G_F_DIM * 8]大小的输出
             g_h0_lin = ops.linear(z, G_F_DIM * 8 * s_h16 * s_w16, 'g_h0_lin')
             g_h0_re = tf.reshape(g_h0_lin, [-1, s_h16, s_w16, G_F_DIM * 8], name='g_h0_re')
-            g_bn0 = ops.batch_norm(g_h0_re, name='g_bn0', train=False)
+            g_bn0 = tf.layers.batch_normalization(g_h0_re, name='g_bn0', training=False)
             h0 = tf.nn.relu(g_bn0)
 
             g_h1 = ops.deconv2d(h0, [self.sample_size, s_h8, s_w8, G_F_DIM * 4], name='g_h1')
-            g_bn1 = ops.batch_norm(g_h1, name='g_bn1', train=False)
+            g_bn1 = tf.layers.batch_normalization(g_h1, name='g_bn1', training=False)
             h1 = tf.nn.relu(g_bn1)
 
             g_h2 = ops.deconv2d(h1, [self.sample_size, s_h4, s_w4, G_F_DIM * 2], name='g_h2')
-            g_bn2 = ops.batch_norm(g_h2, name='g_bn2', train=False)
+            g_bn2 = tf.layers.batch_normalization(g_h2, name='g_bn2', training=False)
             h2 = tf.nn.relu(g_bn2)
 
             g_h3 = ops.deconv2d(h2, [self.sample_size, s_h2, s_w2, G_F_DIM * 1], name='g_h3')
-            g_bn3 = ops.batch_norm(g_h3, name='g_bn3', train=False)
+            g_bn3 = tf.layers.batch_normalization(g_h3, name='g_bn3', training=False)
             h3 = tf.nn.relu(g_bn3)
 
             h4 = ops.deconv2d(h3, [self.sample_size, s_h, s_w, self.image_dims['channel']], name='g_h4')
@@ -167,22 +177,21 @@ class DCGAN():
             h0 = ops.lrelu(d_h0_conv)
 
             d_h1_conv = ops.conv2d(h0, D_F_DIM * 2, name='d_h1_conv')
-            d_bn1 = ops.batch_norm(d_h1_conv, name='d_bn1', train=self.is_train)
+            d_bn1 = tf.layers.batch_normalization(d_h1_conv, name='d_bn1', training=self.is_train)
             h1 = ops.lrelu(d_bn1)
 
             d_h2_conv = ops.conv2d(h1, D_F_DIM * 4, name='d_h2_conv')
-            d_bn2 = ops.batch_norm(d_h2_conv, name='d_bn2', train=self.is_train)
+            d_bn2 = tf.layers.batch_normalization(d_h2_conv, name='d_bn2', training=self.is_train)
             h2 = ops.lrelu(d_bn2)
 
             d_h3_conv = ops.conv2d(h2, D_F_DIM * 8, name='d_h3_conv')
-            d_bn3 = ops.batch_norm(d_h3_conv, name='d_bn3', train=self.is_train)
+            d_bn3 = tf.layers.batch_normalization(d_h3_conv, name='d_bn3', training=self.is_train)
             h3 = ops.lrelu(d_bn3)
 
             # 最后一层使用全连接
             h4 = ops.linear(tf.reshape(h3, [BATCH_SIZE, -1]), 1, 'd_h4_lin')
 
-            # return tf.nn.sigmoid(h4), h4
-            return None, h4
+            return tf.nn.sigmoid(h4), h4
 
     # def discriminator_for_sample(self, image):
     #     with tf.variable_scope("discriminator") as scope:
@@ -210,16 +219,14 @@ class DCGAN():
     #
     #         return tf.nn.sigmoid(h4)
 
-    def train(self, data):
-        batch_manager = BatchManager(data, BATCH_SIZE)
-        # adam梯度下降
+    def train(self, data, is_file=False):
         update_ops = tf.get_collection(tf.GraphKeys.UPDATE_OPS)
         with tf.control_dependencies(update_ops):
-            d_optim = tf.train.RMSPropOptimizer(LEARNING_RATE) \
+            # adam梯度下降
+            d_optim = tf.train.AdamOptimizer(LEARNING_RATE, beta1=BETA_1) \
                 .minimize(self.d_loss, var_list=self.d_vars)
-            g_optim = tf.train.RMSPropOptimizer(LEARNING_RATE) \
+            g_optim = tf.train.AdamOptimizer(LEARNING_RATE, beta1=BETA_1) \
                 .minimize(self.g_loss, var_list=self.g_vars)
-        clip_d_op = [var.assign(tf.clip_by_value(var, CLIP[0], CLIP[1])) for var in self.d_vars]
 
         tf.global_variables_initializer().run()
 
@@ -239,56 +246,55 @@ class DCGAN():
             print(" [!] Load failed...")
 
         for epoch in range(EPOCHS):
+            # 打乱data
+            np.random.shuffle(data)
             # batch的数量
-            batch_idxs = len(data) // BATCH_SIZE // CRITIC_NUM
+            batch_idxs = len(data) // BATCH_SIZE
 
             for idx in range(batch_idxs):
-                # # 取出一个batch的图片
-                # if is_file:
-                #     batch_images_files = data[idx * BATCH_SIZE:(idx + 1) * BATCH_SIZE]
-                #     batch_images = [get_image_from_file(path) for path in batch_images_files]
-                # else:
-                #     batch_images = data[idx * BATCH_SIZE:(idx + 1) * BATCH_SIZE]
-
-                if counter < 25 or counter % 500 == 0:
-                    critic_num = 25
+                # 取出一个batch的图片
+                if is_file:
+                    batch_images_files = data[idx * BATCH_SIZE:(idx + 1) * BATCH_SIZE]
+                    batch_images = [get_image_from_file(path) for path in batch_images_files]
                 else:
-                    critic_num = CRITIC_NUM
+                    batch_images = data[idx * BATCH_SIZE:(idx + 1) * BATCH_SIZE]
 
-                for _ in range(critic_num):
-                    # 随机向量
-                    batch_z = np.random.uniform(-1, 1, [BATCH_SIZE, Z_DIM]).astype(np.float32)
-                    # 训练D
-                    self.sess.run([d_optim], feed_dict={
-                        self.inputs: batch_manager.next_batch(),
-                        self.z: batch_z,
-                        self.is_train: True
-                    })
-                    self.sess.run(clip_d_op)
+                # 随机向量
+                batch_z = np.random.uniform(-1, 1, [BATCH_SIZE, Z_DIM]).astype(np.float32)
+                # 训练D
+                self.sess.run([d_optim], feed_dict={
+                    self.inputs: batch_images,
+                    self.z: batch_z,
+                    self.is_train: True
+                })
 
                 # 训练G
                 batch_z = np.random.uniform(-1, 1, [BATCH_SIZE, Z_DIM]).astype(np.float32)
                 self.sess.run([g_optim], feed_dict={
                     self.z: batch_z,
                     self.is_train: True,
-                    self.inputs: batch_manager.cur_batch()
+                    self.inputs: batch_images
                 })
                 # 训练两次G
+                batch_z = np.random.uniform(-1, 1, [BATCH_SIZE, Z_DIM]).astype(np.float32)
+                self.sess.run([g_optim], feed_dict={
+                    self.z: batch_z,
+                    self.is_train: True,
+                    self.inputs: batch_images})
+                # # 训练三次G
                 # batch_z = np.random.uniform(-1, 1, [BATCH_SIZE, Z_DIM]).astype(np.float32)
-                self.sess.run([g_optim], feed_dict={self.z: batch_z,
-                                                    self.is_train: True,
-                                                    self.inputs: batch_manager.cur_batch()})
+                # self.sess.run([g_optim], feed_dict={self.z: batch_z})
 
                 err_d_fake = self.d_loss_fake.eval({self.z: batch_z, self.is_train: False})
-                err_d_real = self.d_loss_real.eval({self.inputs: batch_manager.cur_batch(), self.is_train: False})
+                err_d_real = self.d_loss_real.eval({self.inputs: batch_images, self.is_train: False})
                 err_g = self.g_loss.eval({self.z: batch_z, self.is_train: False})
 
                 counter += 1
                 print("Epoch: [%2d/%2d] [%4d/%4d] time: %4.4f, d_loss: %.8f, g_loss: %.8f" \
                       % (epoch + 1, EPOCHS, idx, batch_idxs,
-                         time.time() - start_time, sigmoid(err_d_fake + err_d_real), sigmoid(err_g)))
+                         time.time() - start_time, err_d_fake + err_d_real, err_g))
 
-                if np.mod(counter, 70) == 1:
+                if np.mod(counter, 300) == 1:
                     # 生成样本，并未修改参数值
                     samples = self.sess.run(
                         [self.sample_img],
@@ -297,10 +303,10 @@ class DCGAN():
                             self.is_train: False
                         },
                     )
-                    save_images(samples, self.sample_dir, epoch + 1, counter, self.sample_size)
+                    save_images(samples, self.sample_dir, epoch + 1, idx, self.sample_size)
                     print("Sampling......")
 
-                if np.mod(counter, 360) == 1:
+                if np.mod(counter, 1800) == 1:
                     self.save(self.checkpoint_dir, counter)
 
     # 用于保存模型到本地
@@ -359,17 +365,119 @@ class DCGAN():
             # img = np.squeeze(img)
             print(np.array(img).shape)
         img = img[:num]
-        save_images(img, dir, sample_size=num)
+        save_images(img, dir, sample_num=num)
         return img
-        # loss = self.sess.run(
-        #     [self.temp_D], feed_dict={
-        #         self.temp_img: sampled_img,
-        #         self.is_train: False}
-        # )
-        #
-        # print(loss)
 
+    def complete(self, imgs, mask_type='center', center_scale=0.5,
+                 out_dir=None, num_iter=500, out_interval=100):
+        img_shape = imgs[0].shape
+        img_size = img_shape[0:2]
+        nImgs = len(imgs)
 
-def sigmoid(x):
-    sigmoid_scores = 1 / float(1 + math.exp(-x))
-    return sigmoid_scores
+        tf.global_variables_initializer().run()
+
+        self.load(self.checkpoint_dir)
+
+        # 一次补全一个batch_size的图片
+        batch_idxs = int(np.ceil(nImgs / BATCH_SIZE))
+        if mask_type == 'random':
+            fraction_masked = 0.2
+            mask = np.ones(img_shape)
+            mask[np.random.random(img_shape[:2]) < fraction_masked] = 0.0
+        elif mask_type == 'center':
+            assert (center_scale <= 0.5)
+            mask = np.ones(img_shape)
+            l = int(img_size * center_scale)
+            u = int(img_size * (1.0 - center_scale))
+            mask[l:u, l:u, :] = 0.0
+        elif mask_type == 'left':
+            mask = np.ones(img_shape)
+            c = img_shape[0] // 2
+            mask[:, :c, :] = 0.0
+        elif mask_type == 'full':
+            mask = np.ones(img_shape)
+        elif mask_type == 'grid':
+            mask = np.zeros(img_shape)
+            mask[::4, ::4, :] = 1.0
+        else:
+            assert (False, 'no such musk type!')
+
+        for idx in range(0, batch_idxs):
+            l = idx * BATCH_SIZE
+            # 本次batch的最后一张图片的索引
+            u = min((idx + 1) * BATCH_SIZE, nImgs)
+            # 得到图片数据
+            batch_images = np.array(imgs[l:u]).astype(np.float32)
+
+            # 本次idx实际图片数目
+            batchSz = u - l
+            # 图片数目小于一个batch
+            if batchSz < BATCH_SIZE:
+                # 添加值全为0的图片将图片数量补全为batch_size
+                # 便于生成大图片
+                padSz = ((0, int(BATCH_SIZE - batchSz)), (0, 0), (0, 0), (0, 0))
+                # constant 默认为零
+                batch_images = np.pad(batch_images, padSz, 'constant')
+                batch_images = batch_images.astype(np.float32)
+
+            zhats = np.random.uniform(-1, 1, size=(BATCH_SIZE, Z_DIM))
+
+            # 用于手动构建AdamOptimizer
+            m = 0
+            v = 0
+            lr = 0.001
+            beta1 = 0.9
+            beta2 = 0.999
+            epsilon = 1e-08
+
+            # 将生成图片合并为一张大的图片
+            # nRow，nCol代表大图片一行和一列可以放多少小图片
+            nRows = np.ceil(batchSz / 8)
+            nCols = min(8, batchSz)
+            # 将该batch的图片合并为一张大图
+            merge_and_save(batch_images, [nRows, nCols], out_dir, 'before', idx)
+            masked_images = np.multiply(batch_images, mask)
+            merge_and_save(batch_images, [nRows, nCols], out_dir, 'masked', idx)
+            for img in range(batchSz):
+                with open(os.path.join(out_dir, 'logs/hats_{:02d}.log'.format(img)), 'a') as f:
+                    f.write('iter loss ' +
+                            ' '.join(['z{}'.format(zi) for zi in range(Z_DIM)]) +
+                            '\n')
+
+            # 开始训练z
+            for i in range(num_iter):
+                fd = {
+                    self.z: zhats,
+                    self.mask: mask,
+                    self.inputs: batch_images,
+                    self.is_train: False
+                }
+                run = [self.complete_loss, self.grad_complete_loss, self.G]
+                loss, grad_loss, g_imgs = self.sess.run(run, feed_dict=fd)
+
+                for img in range(batchSz):
+                    with open(os.path.join(out_dir, 'logs/hats_{:02d}.log'.format(img)), 'ab') as f:
+                        f.write('{} {} '.format(i, loss[img]).encode())
+                        np.savetxt(f, zhats[img:img + 1])
+
+                if i % out_interval == 0:
+
+                    print(i, np.mean(loss[0:batchSz]))
+                    merge_and_save(g_imgs[:batchSz, :, :, :], [nRows, nCols],
+                                   out_dir, 'generated{}'.format(i), idx)
+
+                    inv_masked_hat_images = np.multiply(g_imgs, 1.0 - mask)
+                    completed = masked_images + inv_masked_hat_images
+                    merge_and_save(completed[:batchSz, :, :, :], [nRows, nCols],
+                                   out_dir, 'completed{}'.format(i), idx)
+
+                # if config.approach == 'adam':
+                # Optimize single completion with Adam
+                m_prev = np.copy(m)
+                v_prev = np.copy(v)
+                m = beta1 * m_prev + (1 - beta1) * grad_loss[0]
+                v = beta2 * v_prev + (1 - beta2) * np.multiply(grad_loss[0], grad_loss[0])
+                m_hat = m / (1 - beta1 ** (i + 1))
+                v_hat = v / (1 - beta2 ** (i + 1))
+                zhats += - np.true_divide(lr * m_hat, (np.sqrt(v_hat) + epsilon))
+                zhats = np.clip(zhats, -1, 1)
