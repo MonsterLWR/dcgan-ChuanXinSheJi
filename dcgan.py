@@ -4,7 +4,7 @@ from utils import *
 import oprations as ops
 
 # 超参数设定
-EPOCHS = 10
+EPOCHS = 1
 BATCH_SIZE = 64
 LEARNING_RATE = 0.0002
 BETA_1 = 0.5  # Momentum term of adam [0.5]
@@ -23,6 +23,9 @@ class DCGAN():
         # tensorflow session
         self.sess = sess
         self.is_train = tf.placeholder(tf.bool, name='is_train')
+
+        self.loaded = False
+        self.counter = 0
 
         # 生成图片数量，默认为64张
         self.sample_size = sample_size
@@ -55,15 +58,6 @@ class DCGAN():
         self.sample_img = self.sampler(self.z)
         # D_ 代表判别器输入生成图片产生的输出
         self.D_, self.D_logits_ = self.discriminator(self.G, reuse=True)
-
-        # # 用于查看图片的判别其的输出
-        # self.temp_img = tf.placeholder(
-        #     tf.float32, [None,
-        #                  self.image_dims['height'],
-        #                  self.image_dims['width'],
-        #                  self.image_dims['channel']
-        #                  ], name='temp_img')
-        # self.temp_D = self.discriminator_for_sample(self.temp_img)
 
         # 判别其对真实图片的损失函数
         self.d_loss_real = tf.reduce_mean(
@@ -193,33 +187,21 @@ class DCGAN():
 
             return tf.nn.sigmoid(h4), h4
 
-    # def discriminator_for_sample(self, image):
-    #     with tf.variable_scope("discriminator") as scope:
-    #         scope.reuse_variables()
-    #
-    #         # 用5*5，stride为2的filter对输入进行卷积操作
-    #         d_h0_conv = ops.conv2d(image, D_F_DIM, name='d_h0_conv')
-    #         # 激活函数为leaky relu
-    #         h0 = ops.lrelu(d_h0_conv)
-    #
-    #         d_h1_conv = ops.conv2d(h0, D_F_DIM * 2, name='d_h1_conv')
-    #         d_bn1 = ops.batch_norm(d_h1_conv, name='d_bn1', train=False)
-    #         h1 = ops.lrelu(d_bn1)
-    #
-    #         d_h2_conv = ops.conv2d(h1, D_F_DIM * 4, name='d_h2_conv')
-    #         d_bn2 = ops.batch_norm(d_h2_conv, name='d_bn2', train=False)
-    #         h2 = ops.lrelu(d_bn2)
-    #
-    #         d_h3_conv = ops.conv2d(h2, D_F_DIM * 8, name='d_h3_conv')
-    #         d_bn3 = ops.batch_norm(d_h3_conv, name='d_bn3', train=False)
-    #         h3 = ops.lrelu(d_bn3)
-    #
-    #         # 最后一层使用全连接
-    #         h4 = ops.linear(tf.reshape(h3, [self.sample_size, -1]), 1, 'd_h4_lin')
-    #
-    #         return tf.nn.sigmoid(h4)
+    def load_model(self):
+        self.loaded = True
+        # 读取检查点，即继续上次训练的参数继续训练
+        # 返回已经训练的batch_counter
+        could_load, checkpoint_counter = self.load(self.checkpoint_dir)
+        if could_load:
+            print(" [*] Load SUCCESS")
+            print("counter:{}".format(checkpoint_counter))
+            return checkpoint_counter
+        else:
+            print(" [!] Load failed...")
+            return 0
 
-    def train(self, data, is_file=False):
+    def train(self, top_data_dir):
+        print('start training...')
         update_ops = tf.get_collection(tf.GraphKeys.UPDATE_OPS)
         with tf.control_dependencies(update_ops):
             # adam梯度下降
@@ -230,84 +212,79 @@ class DCGAN():
 
         tf.global_variables_initializer().run()
 
+        self.counter = self.load_model()
+
+        # 计数器，记录一共训练了多少次batch
+        start_time = time.time()
+
         # 随机向量,用于一定时间的训练后，生成样本图片
         sample_z = np.random.uniform(-1, 1, size=(self.sample_size, Z_DIM))
 
-        # 计数器，记录一共训练了多少次batch
-        counter = 0
-        start_time = time.time()
-        # 读取检查点，即继续上次训练的参数继续训练
-        could_load, checkpoint_counter = self.load(self.checkpoint_dir)
-        if could_load:
-            counter = checkpoint_counter
-            print(" [*] Load SUCCESS")
-            print("counter:{}".format(counter))
-        else:
-            print(" [!] Load failed...")
+        data_dirs = glob.glob(os.path.join(top_data_dir, '*'))
 
         for epoch in range(EPOCHS):
-            # 打乱data
-            np.random.shuffle(data)
-            # batch的数量
-            batch_idxs = len(data) // BATCH_SIZE
+            for data_dir in data_dirs:
+                print('start training img in {}'.format(data_dir))
+                data_files = glob.glob(os.path.join(data_dir, '*'))
+                # batch的数量
+                batch_idxs = len(data_files) // BATCH_SIZE
+                batch_maneger = BatchManager(data_files, BATCH_SIZE)
 
-            for idx in range(batch_idxs):
-                # 取出一个batch的图片
-                if is_file:
-                    batch_images_files = data[idx * BATCH_SIZE:(idx + 1) * BATCH_SIZE]
-                    batch_images = [get_image_from_file(path) for path in batch_images_files]
-                else:
-                    batch_images = data[idx * BATCH_SIZE:(idx + 1) * BATCH_SIZE]
+                for idx in range(batch_idxs):
+                    # 取出一个batch的图片
+                    # if is_file:
+                    #     batch_images_files = data[idx * BATCH_SIZE:(idx + 1) * BATCH_SIZE]
+                    #     batch_images = [get_image_from_file(path) for path in batch_images_files]
+                    # else:
+                    # batch_images = data[idx * BATCH_SIZE:(idx + 1) * BATCH_SIZE]
+                    batch_images = batch_maneger.next_batch()
 
-                # 随机向量
-                batch_z = np.random.uniform(-1, 1, [BATCH_SIZE, Z_DIM]).astype(np.float32)
-                # 训练D
-                self.sess.run([d_optim], feed_dict={
-                    self.inputs: batch_images,
-                    self.z: batch_z,
-                    self.is_train: True
-                })
+                    # 随机向量
+                    batch_z = np.random.uniform(-1, 1, [BATCH_SIZE, Z_DIM]).astype(np.float32)
+                    # 训练D
+                    self.sess.run([d_optim], feed_dict={
+                        self.inputs: batch_images,
+                        self.z: batch_z,
+                        self.is_train: True
+                    })
 
-                # 训练G
-                batch_z = np.random.uniform(-1, 1, [BATCH_SIZE, Z_DIM]).astype(np.float32)
-                self.sess.run([g_optim], feed_dict={
-                    self.z: batch_z,
-                    self.is_train: True,
-                    self.inputs: batch_images
-                })
-                # 训练两次G
-                batch_z = np.random.uniform(-1, 1, [BATCH_SIZE, Z_DIM]).astype(np.float32)
-                self.sess.run([g_optim], feed_dict={
-                    self.z: batch_z,
-                    self.is_train: True,
-                    self.inputs: batch_images})
-                # # 训练三次G
-                # batch_z = np.random.uniform(-1, 1, [BATCH_SIZE, Z_DIM]).astype(np.float32)
-                # self.sess.run([g_optim], feed_dict={self.z: batch_z})
+                    # 训练G
+                    # batch_z = np.random.uniform(-1, 1, [BATCH_SIZE, Z_DIM]).astype(np.float32)
+                    self.sess.run([g_optim], feed_dict={
+                        self.z: batch_z,
+                        self.is_train: True,
+                        self.inputs: batch_images
+                    })
+                    # 训练两次G
+                    # batch_z = np.random.uniform(-1, 1, [BATCH_SIZE, Z_DIM]).astype(np.float32)
+                    self.sess.run([g_optim], feed_dict={
+                        self.z: batch_z,
+                        self.is_train: True,
+                        self.inputs: batch_images})
 
-                err_d_fake = self.d_loss_fake.eval({self.z: batch_z, self.is_train: False})
-                err_d_real = self.d_loss_real.eval({self.inputs: batch_images, self.is_train: False})
-                err_g = self.g_loss.eval({self.z: batch_z, self.is_train: False})
+                    err_d_fake = self.d_loss_fake.eval({self.z: batch_z, self.is_train: False})
+                    err_d_real = self.d_loss_real.eval({self.inputs: batch_images, self.is_train: False})
+                    err_g = self.g_loss.eval({self.z: batch_z, self.is_train: False})
 
-                counter += 1
-                print("Epoch: [%2d/%2d] [%4d/%4d] time: %4.4f, d_loss: %.8f, g_loss: %.8f" \
-                      % (epoch + 1, EPOCHS, idx, batch_idxs,
-                         time.time() - start_time, err_d_fake + err_d_real, err_g))
+                    self.counter += 1
+                    print("Epoch: [%2d/%2d] [%4d/%4d] time: %4.4f, d_loss: %.8f, g_loss: %.8f" \
+                          % (epoch + 1, EPOCHS, idx, batch_idxs,
+                             time.time() - start_time, err_d_fake + err_d_real, err_g))
 
-                if np.mod(counter, 300) == 1:
-                    # 生成样本，并未修改参数值
-                    samples = self.sess.run(
-                        [self.sample_img],
-                        feed_dict={
-                            self.z: sample_z,
-                            self.is_train: False
-                        },
-                    )
-                    save_images(samples, self.sample_dir, epoch + 1, idx, self.sample_size)
-                    print("Sampling......")
+                    if np.mod(self.counter, 150) == 1 and self.counter != 1:
+                        # 生成样本，并未修改参数值
+                        samples = self.sess.run(
+                            [self.sample_img],
+                            feed_dict={
+                                self.z: sample_z,
+                                self.is_train: False
+                            },
+                        )
+                        save_images(samples, self.sample_dir, epoch + 1, self.counter, self.sample_size)
+                        print("Sampling......")
 
-                if np.mod(counter, 1800) == 1:
-                    self.save(self.checkpoint_dir, counter)
+                    if np.mod(self.counter, 451) == 1:
+                        self.save(self.checkpoint_dir, self.counter)
 
     # 用于保存模型到本地
     def save(self, checkpoint_dir, step):
@@ -368,11 +345,13 @@ class DCGAN():
         save_images(img, dir, sample_num=num)
         return img
 
-    def complete(self, imgs, mask_type='center', center_scale=0.5,
-                 out_dir=None, num_iter=500, out_interval=100):
+    def complete(self, imgs, mask_type='center', center_scale=0.3,
+                 out_dir=None, num_iter=1501, out_interval=100):
         img_shape = imgs[0].shape
-        img_size = img_shape[0:2]
+        img_size = img_shape[1]
         nImgs = len(imgs)
+
+        os.makedirs(os.path.join(out_dir, 'logs'))
 
         tf.global_variables_initializer().run()
 
@@ -399,8 +378,6 @@ class DCGAN():
         elif mask_type == 'grid':
             mask = np.zeros(img_shape)
             mask[::4, ::4, :] = 1.0
-        else:
-            assert (False, 'no such musk type!')
 
         for idx in range(0, batch_idxs):
             l = idx * BATCH_SIZE
@@ -437,12 +414,12 @@ class DCGAN():
             # 将该batch的图片合并为一张大图
             merge_and_save(batch_images, [nRows, nCols], out_dir, 'before', idx)
             masked_images = np.multiply(batch_images, mask)
-            merge_and_save(batch_images, [nRows, nCols], out_dir, 'masked', idx)
-            for img in range(batchSz):
-                with open(os.path.join(out_dir, 'logs/hats_{:02d}.log'.format(img)), 'a') as f:
-                    f.write('iter loss ' +
-                            ' '.join(['z{}'.format(zi) for zi in range(Z_DIM)]) +
-                            '\n')
+            merge_and_save(masked_images, [nRows, nCols], out_dir, 'masked', idx)
+            # for img in range(batchSz):
+            #     with open(os.path.join(out_dir, 'logs\\hats_{:02d}.log'.format(img)), 'a') as f:
+            #         f.write('iter loss ' +
+            #                 ' '.join(['z{}'.format(zi) for zi in range(Z_DIM)]) +
+            #                 '\n')
 
             # 开始训练z
             for i in range(num_iter):
@@ -454,15 +431,16 @@ class DCGAN():
                 }
                 run = [self.complete_loss, self.grad_complete_loss, self.G]
                 loss, grad_loss, g_imgs = self.sess.run(run, feed_dict=fd)
+                if i % 10 == 0:
+                    print('iteration:{},loss:{}'.format(i, np.mean(loss[0:batchSz])))
 
-                for img in range(batchSz):
-                    with open(os.path.join(out_dir, 'logs/hats_{:02d}.log'.format(img)), 'ab') as f:
-                        f.write('{} {} '.format(i, loss[img]).encode())
-                        np.savetxt(f, zhats[img:img + 1])
+                # for img in range(batchSz):
+                #     with open(os.path.join(out_dir, 'logs\\hats_{:02d}.log'.format(img)), 'ab') as f:
+                #         f.write('{} {} '.format(i, loss[img]).encode())
+                #         np.savetxt(f, zhats[img:img + 1])
 
                 if i % out_interval == 0:
-
-                    print(i, np.mean(loss[0:batchSz]))
+                    # print(i, np.mean(loss[0:batchSz]))
                     merge_and_save(g_imgs[:batchSz, :, :, :], [nRows, nCols],
                                    out_dir, 'generated{}'.format(i), idx)
 
